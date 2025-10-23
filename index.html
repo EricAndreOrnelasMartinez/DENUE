@@ -5,9 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Visor DENUE — Robos SLP</title>
 
-  <!-- Leaflet CSS (no integrity attribute to avoid blocking if CDN integrity changes) -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
-  <!-- MarkerCluster CSS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
 
@@ -57,7 +55,7 @@
   <div class="topbar">
     <div class="card">
       <div class="title">Visor DENUE — Robos (SLP)</div>
-      <div class="subtitle">Listo para conectarse a una API o para importar CSV. (No conectado)</div>
+      <div class="subtitle">Listo para conectarse a una API con datos agregados por municipio.</div>
     </div>
 
     <div class="card controls">
@@ -73,41 +71,32 @@
     <div class="h">Resumen</div>
     <div class="stat">
       <div>
-        <div class="small">Registros</div>
+        <div class="small">Total Delitos</div>
         <div id="totalCount" style="font-weight:700;font-size:18px">0</div>
       </div>
       <div>
-        <div class="small">Zonas afectadas</div>
+        <div class="small">Municipios afectados</div>
         <div id="zonesCount" style="font-weight:700;font-size:18px">0</div>
       </div>
     </div>
-
-    <div style="margin-top:8px">
-    <div class="small">Filtrar por tipo de delito</div>
-    <select id="tipoDelitoFilter" style="width:100%;padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,0.04);background:transparent;color:inherit">
-        <option value="">Todos los tipos</option>
-    </select>
-    </div>
-
-
+    
     <hr style="opacity:0.06;margin:12px 0">
     <div class="h">Leyenda</div>
     <div class="legend" id="legend">
-      <!-- legend content populated by JS -->
-    </div>
+      </div>
 
     <div style="margin-top:10px;font-size:12px;color:var(--muted)">Formato esperado para la API (JSON):</div>
-    <pre style="font-size:12px;background:rgba(0,0,0,0.25);padding:8px;border-radius:6px;margin-top:8px">[ { "id":1, "lat":22.154, "lon":-100.98, "estado":"San Luis Potosí", "cve_ent":24, "municipio":"Soledad de Graciano", "fecha":"2025-10-21", "tipo":"robo a negocio", "descripcion":"..." }, ... ]</pre>
+    <pre style="font-size:12px;background:rgba(0,0,0,0.25);padding:8px;border-radius:6px;margin-top:8px">[ { "lat":22.154, "lon":-100.98, "municipio":"San Luis Potosí", "total_delitos":100 }, ... ]</pre>
 
   </div>
 
-  <!-- Papaparse for CSV parsing (client-side) -->
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 
   <script>
   // Robust loader + initialization to avoid "L is not defined" errors
   (function(){
-    const DATA_API = '/api/robos'; // <-- reemplazar por ruta real en backend
+    // *** MODIFICACIÓN: Ruta de la API apuntando al script PHP para datos agregados ***
+    const DATA_API = 'api_robos_agregados.php'; // <-- Asume que el archivo PHP está en la misma carpeta o ajuste la ruta.
     const GEOJSON_STATES = '/api/mexico-estados.geojson'; // geojson con límites de entidades federativas (opcional)
 
     function loadScript(url){
@@ -218,47 +207,54 @@
         if(!Array.isArray(data)) return;
 
         // add markers
-        let zoneCounts = {};
+        let totalDelitos = 0; // Para sumar todos los delitos
+        
         data.forEach(d=>{
           const lat = parseFloat(d.lat);
           const lon = parseFloat(d.lon);
+          const delitos = d.total_delitos || 0;
+          totalDelitos += delitos; // Suma los delitos
+
           if(Number.isFinite(lat) && Number.isFinite(lon)){
             const m = L.marker([lat,lon]);
-            const popupHtml = `<div style="min-width:180px"><b>${d.tipo||'Robo'}</b><br>${d.municipio||''}, ${d.estado||''}<br><small>${d.fecha||''}</small><hr style="margin:6px 0"><div style="font-size:12px">${d.descripcion||''}</div></div>`;
+            // *** MODIFICACIÓN: Popup muestra el total de delitos por municipio ***
+            const popupHtml = `<div style="min-width:180px"><b>${d.municipio||'Municipio sin nombre'}</b><br>Total de Delitos: <b>${fmt(delitos)}</b></div>`;
             m.bindPopup(popupHtml);
             markers.addLayer(m);
           }
-          const key = (d.cve_ent !== undefined && d.cve_ent !== null) ? String(d.cve_ent) : (d.estado || 'sin_estado');
-          zoneCounts[key] = (zoneCounts[key]||0)+1;
         });
 
         map.addLayer(markers);
 
-        // update summary
-        document.getElementById('totalCount').textContent = fmt(data.length);
-        document.getElementById('zonesCount').textContent = fmt(Object.keys(zoneCounts).length);
+        // *** MODIFICACIÓN: Actualizar resumen con datos agregados ***
+        document.getElementById('totalCount').textContent = fmt(totalDelitos); // Total de delitos
+        document.getElementById('zonesCount').textContent = fmt(data.length);  // Número de municipios
 
         // if geojson available, enrich features with counts and draw choropleth
         if(mexicoStatesGeo){
           // reset counts
           mexicoStatesGeo.features.forEach(f=>{ f.properties._count = 0; });
 
-          // match by cve_ent or name — this assumes your geojson has cve_ent or NAME or NOMBRE attribute
+          // Match by name or cve_ent
           mexicoStatesGeo.features.forEach(f=>{
             const props = f.properties || {};
-            const keyCandidate = (props.cve_ent !== undefined && props.cve_ent !== null) ? String(props.cve_ent) : (props.CVE_ENT || props.CVE_ENTIDAD || props.ID || props.NAME || props.NOMBRE);
-            const matching = zoneCounts[String(keyCandidate)] || 0;
-            // try by name
-            const byName = zoneCounts[String(props.NOMBRE)] || zoneCounts[String(props.NAME)] || 0;
-            f.properties._count = matching || byName || 0;
+            // Intenta encontrar el municipio coincidente en los datos agregados
+            const matchingData = data.find(d => 
+                String(d.municipio) === String(props.NOMBRE) || String(d.municipio) === String(props.NAME)
+            );
+            
+            // *** MODIFICACIÓN: Usar el total_delitos para el sombreado ***
+            f.properties._count = matchingData ? (matchingData.total_delitos || 0) : 0;
           });
 
           // create choropleth
+          if(choroplethLayer) choroplethLayer.remove(); // Asegura limpiar el anterior
           choroplethLayer = L.geoJson(mexicoStatesGeo, { style: styleFeatureCount, onEachFeature: function(feature, layer){
+            const count = feature.properties._count || 0;
             layer.on('click', ()=>{
               // zoom to feature and show brief popup
               map.fitBounds(layer.getBounds());
-              layer.bindPopup(`<b>${feature.properties.NAME||feature.properties.NOMBRE||'Entidad'}</b><br>Casos: ${feature.properties._count||0}`).openPopup();
+              layer.bindPopup(`<b>${feature.properties.NAME||feature.properties.NOMBRE||'Entidad'}</b><br>Casos: ${fmt(count)}`).openPopup();
             });
           }}).addTo(map);
         }
@@ -270,6 +266,7 @@
           const res = await fetch(DATA_API);
           if(!res.ok) throw new Error('Error cargando API: ' + res.status);
           const data = await res.json();
+          // La API debe devolver un array de objetos con: {lat, lon, municipio, total_delitos}
           applyDataToMap(data);
         }catch(err){
           alert('No se pudo cargar desde API. Revisa la consola para más detalles.');
@@ -284,7 +281,7 @@
           const file = e.target.files[0];
           if(!file) return;
           Papa.parse(file, { header:true, skipEmptyLines:true, complete: function(results){
-            // expected columns: lat, lon, estado, cve_ent, municipio, fecha, tipo, descripcion
+            // Se espera que el CSV tenga: lat, lon, municipio, total_delitos
             applyDataToMap(results.data);
           }});
         };
@@ -315,62 +312,28 @@
         if(!mexicoStatesGeo){
           await loadStatesGeoJSON();
         }
+        
+        // El choropleth se activa o desactiva.
         if(choroplethLayer){
           choroplethLayer.remove(); choroplethLayer=null;
-        } else {
-          // create counts from visible markers
-          const allData = [];
-          markers.eachLayer(m=>{
-            const latlng = m.getLatLng();
-            allData.push({lat:latlng.lat, lon:latlng.lng});
-          });
-          applyDataToMap(allData.concat([])); // will attempt choropleth if geojson available
+        } else if (window.__DENUE && window.__DENUE.originalData) {
+          // Re-aplicar los datos (que ahora son agregados) para forzar el dibujo del choropleth
+          applyDataToMap(window.__DENUE.originalData);
         }
       });
-
-      // --- Filtro por tipo de delito ---
-const tipoSelect = document.getElementById('tipoDelitoFilter');
-
-function updateTipoDelitoFilter(data){
-  const tipos = [...new Set(data.map(d => d.tipo).filter(Boolean))];
-  tipoSelect.innerHTML = '<option value="">Todos los tipos</option>';
-  tipos.forEach(t => {
-    const opt = document.createElement('option');
-    opt.value = t;
-    opt.textContent = t;
-    tipoSelect.appendChild(opt);
-  });
-}
-
-tipoSelect.addEventListener('change', ()=>{
-  const tipo = tipoSelect.value;
-  if(window.__DENUE && window.__DENUE.originalData){
-    const filtered = tipo ? window.__DENUE.originalData.filter(d => d.tipo === tipo) : window.__DENUE.originalData;
-    applyDataToMap(filtered);
-  }
-});
-
-// Guarda los datos originales al cargarlos (para poder filtrarlos después)
-const _oldApplyData = applyDataToMap;
-applyDataToMap = function(data){
-  window.__DENUE.originalData = data;
-  updateTipoDelitoFilter(data);
-  _oldApplyData(data);
-};
+      
+      // *** ELIMINACIÓN DE LÓGICA DE FILTRADO POR TIPO DE DELITO ***
+      
+      // Guarda los datos originales al cargarlos (para poder re-aplicarlos)
+      const _oldApplyData = applyDataToMap;
+      applyDataToMap = function(data){
+          window.__DENUE.originalData = data;
+          _oldApplyData(data);
+      };
 
 
       // initial attempt to load geojson (will silently fail if not provided)
       loadStatesGeoJSON();
-
-      // --- Utilities: filtering by date ---
-     // function filterByDateAndApply(originalData){
-       // const from = document.getElementById('dateFrom').value;
-       // const to = document.getElementById('dateTo').value;
-       // let filtered = originalData;
-       // if(from) filtered = filtered.filter(d=> d.fecha && d.fecha >= from);
-       // if(to) filtered = filtered.filter(d=> d.fecha && d.fecha <= to);
-        //applyDataToMap(filtered);
-      //}
 
       // expose for debugging
       window.__DENUE = { applyDataToMap, loadFromAPI, loadStatesGeoJSON };
@@ -387,4 +350,3 @@ applyDataToMap = function(data){
   </script>
 </body>
 </html>
-
