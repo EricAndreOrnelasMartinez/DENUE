@@ -1,1 +1,390 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Visor DENUE — Robos SLP</title>
+
+  <!-- Leaflet CSS (no integrity attribute to avoid blocking if CDN integrity changes) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <!-- MarkerCluster CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+
+  <style>
+    :root{
+      --bg:#0f1724; /* dark blue */
+      --card:#0b1220;
+      --accent:#ff6b6b;
+      --muted:#615d5d;
+    }
+    html,body,#map{height:100%;margin:0;padding:0;font-family:Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial}
+    body{background:linear-gradient(180deg,var(--bg) 0%, #071028 100%);color:#000}
+
+    /* Top bar */
+    .topbar{position:fixed;left:12px;right:12px;top:12px;z-index:1000;display:flex;align-items:center;gap:12px}
+    .card{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));backdrop-filter:blur(6px);padding:10px 14px;border-radius:12px;box-shadow:0 6px 18px rgba(2,6,23,0.6);border:1px solid rgba(255,255,255,0.03)}
+    .title{font-weight:600;font-size:15px}
+    .subtitle{font-size:12px;color:var(--muted)}
+
+    /* Controls */
+    .controls{display:flex;gap:8px;align-items:center}
+    .btn{background:transparent;border:1px solid rgba(255,255,255,0.06);padding:6px 10px;border-radius:8px;color:inherit;cursor:pointer;font-size:13px}
+    .btn.primary{border-color:rgba(255,107,107,0.9);box-shadow:0 4px 10px rgba(255,107,107,0.06)}
+
+    /* Right panel */
+    .panel{position:fixed;right:12px;top:80px;width:340px;max-height:72%;overflow:auto;padding:12px;border-radius:12px}
+    .panel .h{font-size:13px;font-weight:600;margin-bottom:8px}
+    .stat{display:flex;justify-content:space-between;gap:12px;padding:8px;border-radius:10px;margin-bottom:8px}
+    .small{font-size:12px;color:var(--muted)}
+
+    /* Map container spacing so topbar doesn't cover map controls */
+    #map{position:fixed;inset:0;z-index:0}
+
+    /* Mobile adjustments */
+    @media (max-width:700px){
+      .panel{display:none}
+      .topbar{left:8px;right:8px}
+    }
+
+    /* Legend */
+    .legend{background:rgba(0,0,0,0.35);padding:8px;border-radius:8px;color:#000;font-size:13px}
+    .legend .row{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+    .swatch{width:22px;height:12px;border-radius:3px}
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="card">
+      <div class="title">Visor DENUE — Robos (SLP)</div>
+      <div class="subtitle">Listo para conectarse a una API o para importar CSV. (No conectado)</div>
+    </div>
+
+    <div class="card controls">
+      <button class="btn" id="btnLoadAPI">Cargar desde API</button>
+      <button class="btn" id="btnLoadCSV">Importar CSV local</button>
+      <button class="btn primary" id="btnChoropleth">Alternar sombreado</button>
+    </div>
+  </div>
+
+  <div id="map"></div>
+
+  <div class="panel card" id="panel">
+    <div class="h">Resumen</div>
+    <div class="stat">
+      <div>
+        <div class="small">Registros</div>
+        <div id="totalCount" style="font-weight:700;font-size:18px">0</div>
+      </div>
+      <div>
+        <div class="small">Zonas afectadas</div>
+        <div id="zonesCount" style="font-weight:700;font-size:18px">0</div>
+      </div>
+    </div>
+
+    <div style="margin-top:8px">
+    <div class="small">Filtrar por tipo de delito</div>
+    <select id="tipoDelitoFilter" style="width:100%;padding:6px;border-radius:6px;border:1px solid rgba(255,255,255,0.04);background:transparent;color:inherit">
+        <option value="">Todos los tipos</option>
+    </select>
+    </div>
+
+
+    <hr style="opacity:0.06;margin:12px 0">
+    <div class="h">Leyenda</div>
+    <div class="legend" id="legend">
+      <!-- legend content populated by JS -->
+    </div>
+
+    <div style="margin-top:10px;font-size:12px;color:var(--muted)">Formato esperado para la API (JSON):</div>
+    <pre style="font-size:12px;background:rgba(0,0,0,0.25);padding:8px;border-radius:6px;margin-top:8px">[ { "id":1, "lat":22.154, "lon":-100.98, "estado":"San Luis Potosí", "cve_ent":24, "municipio":"Soledad de Graciano", "fecha":"2025-10-21", "tipo":"robo a negocio", "descripcion":"..." }, ... ]</pre>
+
+  </div>
+
+  <!-- Papaparse for CSV parsing (client-side) -->
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+  <script>
+  // Robust loader + initialization to avoid "L is not defined" errors
+  (function(){
+    const DATA_API = '/api/robos'; // <-- reemplazar por ruta real en backend
+    const GEOJSON_STATES = '/api/mexico-estados.geojson'; // geojson con límites de entidades federativas (opcional)
+
+    function loadScript(url){
+      return new Promise((resolve,reject)=>{
+        const s = document.createElement('script');
+        s.src = url;
+        s.async = false; // maintain execution order
+        s.onload = ()=>resolve();
+        s.onerror = (e)=>reject(new Error('Failed to load script: ' + url));
+        document.head.appendChild(s);
+      });
+    }
+
+    // If Leaflet (L) is not present or the markercluster isn't, load them in sequence then init
+    async function ensureDependencies(){
+      try{
+        if(typeof L === 'undefined'){
+          await loadScript('https://unpkg.com/leaflet@1.9.4/dist/leaflet.js');
+        }
+        if(typeof L === 'undefined'){
+          throw new Error('Leaflet failed to load.');
+        }
+        // markercluster depends on L, so load after
+        if(!L.MarkerClusterGroup && !window.L.MarkerClusterGroup){
+          await loadScript('https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js');
+        }
+      }catch(err){
+        console.error('Error loading dependencies:', err);
+        throw err;
+      }
+    }
+
+    function fmt(n){ return (n||0).toLocaleString(); }
+
+    // color ramp for shading
+    function getColor(d){
+      return d>100 ? '#800026' :
+             d>50  ? '#BD0026' :
+             d>20  ? '#E31A1C' :
+             d>10  ? '#FC4E2A' :
+             d>5   ? '#FD8D3C' :
+             d>0   ? '#FEB24C' : '#FFEDA0';
+    }
+
+    function styleFeatureCount(feature){
+      const count = feature.properties._count || 0;
+      return {
+        fillColor: getColor(count),
+        weight: 1,
+        opacity: 1,
+        color: 'rgba(255,255,255,0.15)',
+        fillOpacity: 0.7
+      };
+    }
+
+    function buildLegend(){
+      const legend = document.getElementById('legend');
+      if(!legend) return;
+      legend.innerHTML = '';
+      const grades = [0,5,10,20,50,100];
+      grades.forEach((g,i)=>{
+        const div = document.createElement('div'); div.className='row';
+        const sw = document.createElement('div'); sw.className='swatch'; sw.style.background=getColor(g+1);
+        const txt = document.createElement('div'); txt.textContent = (g===0? '0' : g+1) + (i===grades.length-1 ? '+' : '') + ' casos';
+        div.appendChild(sw); div.appendChild(txt); legend.appendChild(div);
+      });
+    }
+
+    async function init(){
+      // Ensure we have Leaflet and MarkerCluster available
+      try{
+        await ensureDependencies();
+      }catch(e){
+        // dependencies failed to load; show message on map container
+        const mapEl = document.getElementById('map');
+        if(mapEl){
+          mapEl.innerHTML = '<div style="color:#fff;padding:16px">Error cargando dependencias de mapa. Revisa la consola.</div>';
+        }
+        return;
+      }
+
+      buildLegend();
+
+      // --- Map init ---
+      const map = L.map('map', { zoomControl:true }).setView([22.0, -100.98], 6);
+
+      // Basemap from OpenStreetMap (CDN) — puedes cambiar por tiles propios
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '© OpenStreetMap contributors'
+      }).addTo(map);
+
+      // Marker cluster group
+      const markers = L.markerClusterGroup();
+      let choroplethLayer = null;
+      let mexicoStatesGeo = null; // store geojson
+
+      // --- Data handling ---
+      function clearMap(){
+        markers.clearLayers();
+        if(choroplethLayer) choroplethLayer.remove();
+        document.getElementById('totalCount').textContent = '0';
+        document.getElementById('zonesCount').textContent = '0';
+      }
+
+      function applyDataToMap(data){
+        clearMap();
+        if(!Array.isArray(data)) return;
+
+        // add markers
+        let zoneCounts = {};
+        data.forEach(d=>{
+          const lat = parseFloat(d.lat);
+          const lon = parseFloat(d.lon);
+          if(Number.isFinite(lat) && Number.isFinite(lon)){
+            const m = L.marker([lat,lon]);
+            const popupHtml = `<div style="min-width:180px"><b>${d.tipo||'Robo'}</b><br>${d.municipio||''}, ${d.estado||''}<br><small>${d.fecha||''}</small><hr style="margin:6px 0"><div style="font-size:12px">${d.descripcion||''}</div></div>`;
+            m.bindPopup(popupHtml);
+            markers.addLayer(m);
+          }
+          const key = (d.cve_ent !== undefined && d.cve_ent !== null) ? String(d.cve_ent) : (d.estado || 'sin_estado');
+          zoneCounts[key] = (zoneCounts[key]||0)+1;
+        });
+
+        map.addLayer(markers);
+
+        // update summary
+        document.getElementById('totalCount').textContent = fmt(data.length);
+        document.getElementById('zonesCount').textContent = fmt(Object.keys(zoneCounts).length);
+
+        // if geojson available, enrich features with counts and draw choropleth
+        if(mexicoStatesGeo){
+          // reset counts
+          mexicoStatesGeo.features.forEach(f=>{ f.properties._count = 0; });
+
+          // match by cve_ent or name — this assumes your geojson has cve_ent or NAME or NOMBRE attribute
+          mexicoStatesGeo.features.forEach(f=>{
+            const props = f.properties || {};
+            const keyCandidate = (props.cve_ent !== undefined && props.cve_ent !== null) ? String(props.cve_ent) : (props.CVE_ENT || props.CVE_ENTIDAD || props.ID || props.NAME || props.NOMBRE);
+            const matching = zoneCounts[String(keyCandidate)] || 0;
+            // try by name
+            const byName = zoneCounts[String(props.NOMBRE)] || zoneCounts[String(props.NAME)] || 0;
+            f.properties._count = matching || byName || 0;
+          });
+
+          // create choropleth
+          choroplethLayer = L.geoJson(mexicoStatesGeo, { style: styleFeatureCount, onEachFeature: function(feature, layer){
+            layer.on('click', ()=>{
+              // zoom to feature and show brief popup
+              map.fitBounds(layer.getBounds());
+              layer.bindPopup(`<b>${feature.properties.NAME||feature.properties.NOMBRE||'Entidad'}</b><br>Casos: ${feature.properties._count||0}`).openPopup();
+            });
+          }}).addTo(map);
+        }
+      }
+
+      // --- Loading from API (placeholder) ---
+      async function loadFromAPI(){
+        try{
+          const res = await fetch(DATA_API);
+          if(!res.ok) throw new Error('Error cargando API: ' + res.status);
+          const data = await res.json();
+          applyDataToMap(data);
+        }catch(err){
+          alert('No se pudo cargar desde API. Revisa la consola para más detalles.');
+          console.error(err);
+        }
+      }
+
+      // --- Loading local CSV using input -> parse with PapaParse ---
+      function createCSVInputAndParse(){
+        const input = document.createElement('input'); input.type='file'; input.accept='.csv,text/csv';
+        input.onchange = e => {
+          const file = e.target.files[0];
+          if(!file) return;
+          Papa.parse(file, { header:true, skipEmptyLines:true, complete: function(results){
+            // expected columns: lat, lon, estado, cve_ent, municipio, fecha, tipo, descripcion
+            applyDataToMap(results.data);
+          }});
+        };
+        input.click();
+      }
+
+      // --- Load states GeoJSON (optional) ---
+      async function loadStatesGeoJSON(){
+        try{
+          const res = await fetch(GEOJSON_STATES);
+          if(!res.ok) throw new Error('No se encontró geojson de estados');
+          const gj = await res.json();
+          mexicoStatesGeo = gj;
+        }catch(err){
+          console.warn('GeoJSON de estados no disponible. Choropleth no funcionará hasta que lo proveas.');
+        }
+      }
+
+      // wire buttons
+      document.getElementById('btnLoadAPI').addEventListener('click', ()=>{
+        loadFromAPI();
+      });
+      document.getElementById('btnLoadCSV').addEventListener('click', ()=>{
+        createCSVInputAndParse();
+      });
+      document.getElementById('btnChoropleth').addEventListener('click', async ()=>{
+        
+        if(!mexicoStatesGeo){
+          await loadStatesGeoJSON();
+        }
+        if(choroplethLayer){
+          choroplethLayer.remove(); choroplethLayer=null;
+        } else {
+          // create counts from visible markers
+          const allData = [];
+          markers.eachLayer(m=>{
+            const latlng = m.getLatLng();
+            allData.push({lat:latlng.lat, lon:latlng.lng});
+          });
+          applyDataToMap(allData.concat([])); // will attempt choropleth if geojson available
+        }
+      });
+
+      // --- Filtro por tipo de delito ---
+const tipoSelect = document.getElementById('tipoDelitoFilter');
+
+function updateTipoDelitoFilter(data){
+  const tipos = [...new Set(data.map(d => d.tipo).filter(Boolean))];
+  tipoSelect.innerHTML = '<option value="">Todos los tipos</option>';
+  tipos.forEach(t => {
+    const opt = document.createElement('option');
+    opt.value = t;
+    opt.textContent = t;
+    tipoSelect.appendChild(opt);
+  });
+}
+
+tipoSelect.addEventListener('change', ()=>{
+  const tipo = tipoSelect.value;
+  if(window.__DENUE && window.__DENUE.originalData){
+    const filtered = tipo ? window.__DENUE.originalData.filter(d => d.tipo === tipo) : window.__DENUE.originalData;
+    applyDataToMap(filtered);
+  }
+});
+
+// Guarda los datos originales al cargarlos (para poder filtrarlos después)
+const _oldApplyData = applyDataToMap;
+applyDataToMap = function(data){
+  window.__DENUE.originalData = data;
+  updateTipoDelitoFilter(data);
+  _oldApplyData(data);
+};
+
+
+      // initial attempt to load geojson (will silently fail if not provided)
+      loadStatesGeoJSON();
+
+      // --- Utilities: filtering by date ---
+     // function filterByDateAndApply(originalData){
+       // const from = document.getElementById('dateFrom').value;
+       // const to = document.getElementById('dateTo').value;
+       // let filtered = originalData;
+       // if(from) filtered = filtered.filter(d=> d.fecha && d.fecha >= from);
+       // if(to) filtered = filtered.filter(d=> d.fecha && d.fecha <= to);
+        //applyDataToMap(filtered);
+      //}
+
+      // expose for debugging
+      window.__DENUE = { applyDataToMap, loadFromAPI, loadStatesGeoJSON };
+
+      // small hint: if you want to test without backend, import CSV using the "Importar CSV local" button
+    }
+
+    // Wait for DOM content and then initialize
+    document.addEventListener('DOMContentLoaded', ()=>{
+      init().catch(err=>console.error(err));
+    });
+
+  })();
+  </script>
+</body>
+</html>
 
